@@ -45,7 +45,7 @@ def parse_prompt_subprompts(prompt: str):
 
     return segments
 
-def faster_compel(prompt):
+def faster_compel(prompt, device):
 
     segments = parse_prompt_subprompts(prompt)
     fragments = [segment[0] for segment in segments]
@@ -54,7 +54,7 @@ def faster_compel(prompt):
     this_conditioning = compel.conditioning_provider.get_embeddings_for_weighted_prompt_fragments(
         text_batch=[fragments],
         fragment_weights_batch=[weights],
-        device="mps"
+        device=device
     )
     return this_conditioning
 
@@ -80,7 +80,7 @@ if __name__ == '__main__':
         # time compel
         start = time.perf_counter()
         # compel.build_conditioning_tensor(prompt)
-        prompt_embeds = faster_compel(prompt)
+        prompt_embeds = faster_compel(prompt, device)
         times.append(time.perf_counter() - start)
 
         # generate image
