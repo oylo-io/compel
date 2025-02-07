@@ -67,7 +67,7 @@ if __name__ == '__main__':
 
     # warmup
     for _ in range(10):
-        faster_compel('dummy')
+        faster_compel('dummy', device)
 
     # compel
     times = []
