@@ -73,12 +73,12 @@ class EmbeddingsProvider:
         self.empty_z = self._encode_token_ids_to_embeddings(self.empty_token_ids)
 
         # cache
+        self.tokenizer_cache = {}
         self.embedding_cache = {}
 
     @property
     def max_token_count(self) -> int:
         return self.tokenizer.model_max_length
-
 
     @classmethod
     def apply_embedding_weights(cls, embeddings: torch.Tensor, per_embedding_weights: List[float], normalize: bool) -> torch.Tensor:
@@ -129,8 +129,8 @@ class EmbeddingsProvider:
             # closer the resulting embedding is to an embedding for a prompt that simply lacks this fragment.
 
             # handle weights >=1
-            (tokens, per_token_weights, mask), per_fragment_token_ids = self.get_token_ids_and_expand_weights(fragments, weights, device=device)
-            base_embedding = self.build_weighted_embedding_tensor(tokens, per_token_weights, mask)
+            (tokens, per_token_weights, mask), per_fragment_token_ids, cache_key = self.get_token_ids_and_expand_weights(fragments, weights, device=device)
+            base_embedding = self.build_weighted_embedding_tensor(tokens, per_token_weights, mask, cache_key)
 
             # this is our starting point
             embeddings = base_embedding.unsqueeze(0)
@@ -218,29 +218,48 @@ class EmbeddingsProvider:
         :truncation_override: Optional, overrides the `truncate` argument passed to `__init__`.
         :return: A list of lists of token ids corresponding to the input strings.
         """
-        # for args documentation of self.tokenizer() see ENCODE_KWARGS_DOCSTRING in tokenization_utils_base.py
-        # (part of `transformers` lib)
-        truncation = self.truncate_to_model_max_length if truncation_override is None else truncation_override
-        token_ids_list = self.tokenizer(
-            texts,
-            truncation=truncation,
-            padding=padding,
-            return_tensors=None,  # just give me lists of ints
-        )['input_ids']
-
+        # Initialize result list
         result = []
-        for token_ids in token_ids_list:
-            # trim eos/bos
-            token_ids = token_ids[1:-1]
-            # pad for textual inversions with vector length >1
-            if self.textual_inversion_manager is not None:
-                token_ids = self.textual_inversion_manager.expand_textual_inversion_token_ids_if_necessary(token_ids)
+        non_cached_texts = []
+        non_cached_indices = []
 
-            # add back eos/bos if requested
-            if include_start_and_end_markers:
-                token_ids = [self.tokenizer.bos_token_id] + token_ids + [self.tokenizer.eos_token_id]
+        # Identify non-cached texts
+        for i, text in enumerate(texts):
+            if text in self.tokenizer_cache:
+                print('Tokenizer Cache hit!')
+                result.append(self.tokenizer_cache[text])
+            else:
+                non_cached_texts.append(text)
+                non_cached_indices.append(i)
 
-            result.append(token_ids)
+        # Tokenize non-cached texts
+        if non_cached_texts:
+            # for args documentation of self.tokenizer() see ENCODE_KWARGS_DOCSTRING in tokenization_utils_base.py
+            # (part of `transformers` lib)
+            truncation = self.truncate_to_model_max_length if truncation_override is None else truncation_override
+            token_ids_list = self.tokenizer(
+                texts,
+                truncation=truncation,
+                padding=padding,
+                return_tensors=None,  # just give me lists of ints
+            )['input_ids']
+
+            # Process and cache the results
+            for idx, token_ids in zip(non_cached_indices, token_ids_list):
+                # Trim eos/bos
+                token_ids = token_ids[1:-1]
+                # Pad for textual inversions with vector length >1
+                if self.textual_inversion_manager is not None:
+                    token_ids = self.textual_inversion_manager.expand_textual_inversion_token_ids_if_necessary(
+                        token_ids)
+
+                # Add back eos/bos if requested
+                if include_start_and_end_markers:
+                    token_ids = [self.tokenizer.bos_token_id] + token_ids + [self.tokenizer.eos_token_id]
+
+                # Cache the result
+                self.tokenizer_cache[texts[idx]] = token_ids
+                result.append(token_ids)
 
         return result
 
@@ -255,7 +274,6 @@ class EmbeddingsProvider:
         pooled = text_encoder_output.text_embeds
 
         return pooled
-
 
     def get_token_ids_and_expand_weights(self, fragments: List[str], weights: List[float], device: str
                                          ) -> (torch.Tensor, torch.Tensor, torch.Tensor):
@@ -281,14 +299,16 @@ class EmbeddingsProvider:
         per_fragment_token_ids = self.get_token_ids(fragments, include_start_and_end_markers=False)
         all_token_ids: List[int] = []
         all_token_weights: List[float] = []
-        # print("all fragments:", fragments, weights)
         for this_fragment_token_ids, weight in zip(per_fragment_token_ids, weights):
             # append
             all_token_ids += this_fragment_token_ids
             # fill out weights tensor with one float per token
             all_token_weights += [float(weight)] * len(this_fragment_token_ids)
 
-        return self._chunk_and_pad_token_ids(all_token_ids, all_token_weights, device=device), per_fragment_token_ids
+        # build cache key
+        cache_key = (tuple(all_token_ids), tuple(all_token_weights))
+
+        return self._chunk_and_pad_token_ids(all_token_ids, all_token_weights, device=device), per_fragment_token_ids, cache_key
 
     def _chunk_and_pad_token_ids(self, token_ids: List[int], token_weights: List[float], device: str
                                  ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -334,21 +354,26 @@ class EmbeddingsProvider:
         # print(f"assembled all_token_ids_tensor with shape {all_token_ids_tensor.shape}")
         return all_token_ids_tensor, all_per_token_weights_tensor, all_masks
 
+    def tensor_to_hashable(self, tensor: torch.Tensor) -> int:
+        # Use a combination of tensor properties to generate a hash
+        return hash((tensor.shape, tensor.dtype, torch.sum(tensor).item()))
+
     def build_weighted_embedding_tensor(self,
                                         token_ids: torch.Tensor,
                                         per_token_weights: torch.Tensor,
-                                        attention_mask: Optional[torch.Tensor] = None
+                                        attention_mask: Optional[torch.Tensor] = None,
+                                        cache_key = None
                                         ) -> torch.Tensor:
         if token_ids.shape[0] % self.max_token_count != 0:
             raise ValueError(f"token_ids has shape {token_ids.shape} - expected a multiple of {self.max_token_count}")
 
         # Create a cache key based on the inputs
-        cache_key = (tuple(token_ids.tolist()), tuple(per_token_weights.tolist()),
-                     tuple(attention_mask.tolist()) if attention_mask is not None else None)
+        if not cache_key:
+            cache_key = (tuple(token_ids.tolist()), tuple(per_token_weights.tolist()))
 
         # Check if the result is already cached
         if cache_key in self.embedding_cache:
-            print('Cache hit!')
+            print('Embedding Cache hit!')
             return self.embedding_cache[cache_key]
 
         weighted_z = []

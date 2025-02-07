@@ -75,15 +75,15 @@ if __name__ == '__main__':
         times.append(time.perf_counter() - start)
 
         # generate image
-        image = pipe(
-            prompt=None,
-            prompt_embeds=prompt_embeds,
-            guidance_scale=1.0,
-            num_inference_steps=1
-        ).images[0]
-        images.append(image)
+        # image = pipe(
+        #     prompt=None,
+        #     prompt_embeds=prompt_embeds,
+        #     guidance_scale=1.0,
+        #     num_inference_steps=1
+        # ).images[0]
+        # images.append(image)
 
     print(f"Average compel time: {sum(times) / len(times)}")
 
-    grid = make_image_grid(images, rows=3, cols=3)
-    grid.show()
+    # grid = make_image_grid(images, rows=3, cols=3)
+    # grid.show()
