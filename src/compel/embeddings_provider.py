@@ -63,6 +63,17 @@ class EmbeddingsProvider:
         # by default always use float32
         self.get_dtype_for_device = dtype_for_device_getter
 
+        # Precompute empty_token_ids and empty_z
+        self.empty_token_ids = torch.tensor(
+            [self.tokenizer.bos_token_id, self.tokenizer.eos_token_id] +
+            [self.tokenizer.pad_token_id] * (self.max_token_count - 2),
+            dtype=torch.int, device=self.device
+        ).unsqueeze(0)
+
+        self.empty_z = self._encode_token_ids_to_embeddings(self.empty_token_ids)
+
+        # cache
+        self.embedding_cache = {}
 
     @property
     def max_token_count(self) -> int:
@@ -70,14 +81,15 @@ class EmbeddingsProvider:
 
 
     @classmethod
-    def apply_embedding_weights(cls, embeddings: torch.Tensor, per_embedding_weights: List[float],
-                                normalize: bool) -> torch.Tensor:
-        per_embedding_weights = torch.tensor(per_embedding_weights, dtype=embeddings.dtype, device=embeddings.device)
-        if normalize:
-            per_embedding_weights = per_embedding_weights / torch.sum(per_embedding_weights)
+    def apply_embedding_weights(cls, embeddings: torch.Tensor, per_embedding_weights: List[float], normalize: bool) -> torch.Tensor:
 
-        reshaped_weights = per_embedding_weights.reshape(per_embedding_weights.shape + (1, 1,))
+        per_embedding_weights_tensor = torch.tensor(per_embedding_weights, dtype=embeddings.dtype, device=embeddings.device)
+        if normalize:
+            per_embedding_weights_tensor /= torch.sum(per_embedding_weights_tensor)
+
+        reshaped_weights = per_embedding_weights_tensor.reshape(per_embedding_weights_tensor.shape + (1, 1,))
         blended_embeddings = torch.sum(embeddings * reshaped_weights, dim=1)
+
         # blended_embeddings now has shape (77, 768)
         return blended_embeddings
 
@@ -103,6 +115,7 @@ class EmbeddingsProvider:
 
         batch_z = None
         batch_tokens = None
+
         for fragments, weights in zip(text_batch, fragment_weights_batch):
 
             # First, weight tokens in individual fragments by scaling the feature vectors as requested (effectively
@@ -116,8 +129,8 @@ class EmbeddingsProvider:
             # closer the resulting embedding is to an embedding for a prompt that simply lacks this fragment.
 
             # handle weights >=1
-            tokens, per_token_weights, mask = self.get_token_ids_and_expand_weights(fragments, weights, device=device)
-            base_embedding = self.build_weighted_embedding_tensor(tokens, per_token_weights, mask, device=device)
+            (tokens, per_token_weights, mask), per_fragment_token_ids = self.get_token_ids_and_expand_weights(fragments, weights, device=device)
+            base_embedding = self.build_weighted_embedding_tensor(tokens, per_token_weights, mask)
 
             # this is our starting point
             embeddings = base_embedding.unsqueeze(0)
@@ -131,7 +144,7 @@ class EmbeddingsProvider:
             # e.g. for "mountain:1 man:0.5", intuitively the "man" should be "half-gone". therefore, append an embedding
             # for "mountain" (i.e. without "man") to the already-produced embedding for "mountain man", and weight it
             # such that the resulting lerped embedding is exactly half-way between "mountain man" and "mountain".
-            fragment_token_index_ranges = self._get_token_ranges_for_fragments(tokens.tolist(), fragments)
+            fragment_token_index_ranges = self._get_token_ranges_for_fragments(per_fragment_token_ids, tokens.tolist())
 
             for index in range(len(fragment_token_index_ranges)):
                 fragment_weight = weights[index]
@@ -147,16 +160,14 @@ class EmbeddingsProvider:
                             mask_without_fragment[self.tokenizer.model_max_length-1::self.tokenizer.model_max_length] = 1
                         embedding_without_this = self.build_weighted_embedding_tensor(tokens,
                                                                                       per_token_weights,
-                                                                                      mask_without_fragment,
-                                                                                      device=device)
+                                                                                      mask_without_fragment)
                     else:
                         fragments_without_this = fragments[0:index] + fragments[index+1:]
                         weights_without_this = weights[0:index] + weights[index+1:]
                         tokens_without_fragment, per_token_weights_without_fragment, mask_without_fragment = \
                             self.get_token_ids_and_expand_weights(fragments_without_this, weights_without_this, device=device)
                         embedding_without_this = self.build_weighted_embedding_tensor(tokens_without_fragment,
-                                                                                      per_token_weights_without_fragment,
-                                                                                      device=device)
+                                                                                      per_token_weights_without_fragment)
 
                     embeddings = torch.cat((embeddings, embedding_without_this.unsqueeze(0)), dim=1)
                     # weight of the embedding *without* this fragment gets *stronger* as its weight approaches 0
@@ -277,7 +288,7 @@ class EmbeddingsProvider:
             # fill out weights tensor with one float per token
             all_token_weights += [float(weight)] * len(this_fragment_token_ids)
 
-        return self._chunk_and_pad_token_ids(all_token_ids, all_token_weights, device=device)
+        return self._chunk_and_pad_token_ids(all_token_ids, all_token_weights, device=device), per_fragment_token_ids
 
     def _chunk_and_pad_token_ids(self, token_ids: List[int], token_weights: List[float], device: str
                                  ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -323,43 +334,27 @@ class EmbeddingsProvider:
         # print(f"assembled all_token_ids_tensor with shape {all_token_ids_tensor.shape}")
         return all_token_ids_tensor, all_per_token_weights_tensor, all_masks
 
-
     def build_weighted_embedding_tensor(self,
                                         token_ids: torch.Tensor,
                                         per_token_weights: torch.Tensor,
-                                        attention_mask: Optional[torch.Tensor] = None,
-                                        device: Optional[str] = None) -> torch.Tensor:
-        """
-        Build a tensor that embeds the passed-in token IDs and applies the given per_token weights
-        
-        :param token_ids: A tensor of shape `n*[self.max_length]` containing token IDs (ints) where n is some arbitrary
-            integer (i.e. n==1 for shorter prompts, or it may be >1 if there are more than max_length tokens in the
-            original prompt)
-        :param per_token_weights: A tensor containing weights (floats), with the same shape as token_ids
-        :param attention_mask: A tensor containing a mask (ints), with the same shape as token_ids, where 1 means use
-            the corresponding token and 0 means ignore the corresponding token.
-
-        :return: A tensor of shape `[1, token_ids.shape[0], token_dim]` representing the requested weighted embeddings
-            where `token_dim` is 768 for SD1 and 1280 for SD2.
-        """
-        # print(f"building weighted embedding tensor for {tokens} with weights {token_weights}")
+                                        attention_mask: Optional[torch.Tensor] = None
+                                        ) -> torch.Tensor:
         if token_ids.shape[0] % self.max_token_count != 0:
             raise ValueError(f"token_ids has shape {token_ids.shape} - expected a multiple of {self.max_token_count}")
 
-        if device is None:
-            device = self.device
+        # Create a cache key based on the inputs
+        cache_key = (tuple(token_ids.tolist()), tuple(per_token_weights.tolist()),
+                     tuple(attention_mask.tolist()) if attention_mask is not None else None)
 
-        chunk_start_index = 0
-        empty_token_ids = torch.tensor([self.tokenizer.bos_token_id] +
-                                       [self.tokenizer.eos_token_id] +
-                                       [self.tokenizer.pad_token_id] * (self.max_token_count - 2),
-                                       dtype=torch.int, device=device).unsqueeze(0)
-        empty_z = self._encode_token_ids_to_embeddings(empty_token_ids)
-        weighted_z = None
+        # Check if the result is already cached
+        if cache_key in self.embedding_cache:
+            print('Cache hit!')
+            return self.embedding_cache[cache_key]
 
+        weighted_z = []
         chunk_size = self.max_token_count
-        while chunk_start_index < token_ids.shape[0]:
-            next_chunk_start_index = chunk_start_index+chunk_size
+        for chunk_start_index in range(0, token_ids.shape[0], chunk_size):
+            next_chunk_start_index = chunk_start_index + chunk_size
             chunk_per_token_weights = per_token_weights[chunk_start_index:next_chunk_start_index]
             chunk_token_ids = token_ids[chunk_start_index:next_chunk_start_index].unsqueeze(0)
             chunk_attention_mask = (
@@ -369,19 +364,19 @@ class EmbeddingsProvider:
             )
 
             z = self._encode_token_ids_to_embeddings(chunk_token_ids, chunk_attention_mask)
-            batch_weights_expanded = chunk_per_token_weights.reshape(
-                chunk_per_token_weights.shape + (1,)).expand(z.shape).to(z)
+            batch_weights_expanded = chunk_per_token_weights.view(-1, 1).expand_as(z)
 
-            z_delta_from_empty = z - empty_z
-            this_weighted_z = empty_z + (z_delta_from_empty * batch_weights_expanded)
-            weighted_z = (
-                this_weighted_z
-                if weighted_z is None
-                else torch.cat([weighted_z, this_weighted_z], dim=1)
-            )
-            chunk_start_index += chunk_size
+            z_delta_from_empty = z - self.empty_z
+            this_weighted_z = self.empty_z + (z_delta_from_empty * batch_weights_expanded)
+            weighted_z.append(this_weighted_z)
 
-        return weighted_z
+        # create the result
+        embedding_tensor =  torch.cat(weighted_z, dim=1)
+
+        # Cache the result
+        self.embedding_cache[cache_key] = embedding_tensor
+
+        return embedding_tensor
 
     def _encode_token_ids_to_embeddings(self, token_ids: torch.Tensor,
                                         attention_mask: Optional[torch.Tensor]=None) -> torch.Tensor:
@@ -403,63 +398,29 @@ class EmbeddingsProvider:
 
         assert False, f"unrecognized ReturnEmbeddingsType: {self.returned_embeddings_type}"
 
-    def _get_token_ranges_for_fragments(self, chunked_and_padded_token_ids: List[int], fragments: List[str]) -> List[Tuple[int, int]]:
-        """
-        Match token id sequences for the strings in `fragments` with token id sequences in `chunked_and_padded_token_ids`,
-         taking into account any eos and bos markers that indicate `self.tokenizer.max_model_length`-sized chunks.
-
-        :return: a list of tuples indicating start and end indices of each fragment's corresponding token id sequence in
-         `chunked_and_padded_token_ids`.
-        """
-        per_fragment_token_ids = self.get_token_ids(fragments, include_start_and_end_markers=False)
+    def _get_token_ranges_for_fragments(self, per_fragment_token_ids, chunked_and_padded_token_ids: List[int]) -> List[Tuple[int, int]]:
         fragment_start = 0
-
         corresponding_indices = []
+
         for fragment_index, fragment_token_ids in enumerate(per_fragment_token_ids):
             if len(fragment_token_ids) == 0:
                 corresponding_indices.append((None, None))
                 continue
-            if self.truncate_to_model_max_length and fragment_start >= self.tokenizer.model_max_length - 1:
-                break
-            # find the start
-            while True:
-                if fragment_start >= len(chunked_and_padded_token_ids)-1:
-                    if self.truncate_to_model_max_length:
-                        fragment_start = len(chunked_and_padded_token_ids)-1
-                        break
-                    else:
-                        raise RuntimeError(
-                            f"couldn't find start of token sequence for fragment at index {fragment_index} '{fragments[fragment_index]}'")
+
+            while fragment_start < len(chunked_and_padded_token_ids):
                 if chunked_and_padded_token_ids[fragment_start] == fragment_token_ids[0]:
                     break
                 fragment_start += 1
-            # step through
+
             fragment_end = fragment_start
             fragment_relative_index = 0
-            while True:
-                if fragment_end >= len(chunked_and_padded_token_ids)-1:
-                    if self.truncate_to_model_max_length:
-                        fragment_end = len(chunked_and_padded_token_ids)-1
-                        break
-                    else:
-                        raise RuntimeError(
-                            f"couldn't find end of token sequence for fragment at index {fragment_index} '{fragments[fragment_index]}'")
-                if not self.truncate_to_model_max_length and (
-                        chunked_and_padded_token_ids[fragment_end] == self.tokenizer.eos_token_id
-                        or chunked_and_padded_token_ids[fragment_end] == self.tokenizer.bos_token_id
-                ):
-                    # bos/eos: chunk boundaries
-                    fragment_end += 1
-                elif chunked_and_padded_token_ids[fragment_end] == fragment_token_ids[fragment_relative_index]:
-                    # matching token
+
+            while fragment_end < len(chunked_and_padded_token_ids):
+                if chunked_and_padded_token_ids[fragment_end] == fragment_token_ids[fragment_relative_index]:
                     fragment_relative_index += 1
                     if fragment_relative_index == len(fragment_token_ids):
                         break
-                    fragment_end += 1
-                else:
-                    raise RuntimeError(
-                        f"token sequence mismatch for fragment at index {fragment_index} '{fragments[fragment_index]}':"
-                        f"expected {fragment_token_ids}, found {chunked_and_padded_token_ids[fragment_start:fragment_end + 1]}")
+                fragment_end += 1
 
             corresponding_indices.append((fragment_start, fragment_end))
             fragment_start = fragment_end + 1
