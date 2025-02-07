@@ -7,6 +7,14 @@ from src.compel.compel import Compel
 from diffusers import StableDiffusionPipeline
 
 
+def get_device(cls):
+    if torch.cuda.is_available():
+        return 'cuda'
+    elif torch.backends.mps.is_available():
+        return 'mps'
+    else:
+        return 'cpu'
+
 def parse_prompt_subprompts(prompt: str):
     """
     Parses a prompt to extract subprompts and their weights.
@@ -53,11 +61,12 @@ def faster_compel(prompt):
 
 if __name__ == '__main__':
 
-    pipe = StableDiffusionPipeline.from_pretrained("stabilityai/sd-turbo",torch_dtype=torch.float16).to("mps")
-    compel = Compel(tokenizer=pipe.tokenizer, text_encoder=pipe.text_encoder, device="mps")
+    device = get_device()
+    pipe = StableDiffusionPipeline.from_pretrained("stabilityai/sd-turbo",torch_dtype=torch.float16).to(device)
+    compel = Compel(tokenizer=pipe.tokenizer, text_encoder=pipe.text_encoder, device=device)
 
     # warmup
-    for _ in range(20):
+    for _ in range(10):
         faster_compel('dummy')
 
     # compel
