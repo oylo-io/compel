@@ -1,9 +1,10 @@
 import math
 from abc import ABC
 from enum import Enum
-from typing import Callable, Union, Optional
+from typing import Callable, Union, Optional, OrderedDict
 
 import torch
+from cachetools import LRUCache
 from transformers import CLIPTokenizer, CLIPTextModel, CLIPTextModelWithProjection
 from typing import List, Tuple
 
@@ -73,8 +74,8 @@ class EmbeddingsProvider:
         self.empty_z = self._encode_token_ids_to_embeddings(self.empty_token_ids)
 
         # cache
-        self.tokenizer_cache = {}
-        self.embedding_cache = {}
+        self.tokenizer_cache = LRUCache(maxsize=1000)
+        self.embedding_cache = LRUCache(maxsize=100)
 
     @property
     def max_token_count(self) -> int:
@@ -203,8 +204,13 @@ class EmbeddingsProvider:
         else:
             return batch_z
 
-    def get_token_ids(self, texts: List[str], include_start_and_end_markers: bool = True, padding: str = 'do_not_pad',
-                      truncation_override: Optional[bool] = None) -> List[List[int]]:
+    def get_token_ids(
+            self,
+            texts: List[str],
+            include_start_and_end_markers: bool = True,
+            padding: str = 'do_not_pad',
+            truncation_override: Optional[bool] = None
+    ) -> List[List[int]]:
         """
         Convert a list of strings like `["a cat", "a dog", "monkey riding a bicycle"]` into a list of lists of token
         ids like `[[bos, 0, 1, eos], [bos, 0, 2, eos], [bos, 3, 4, 0, 5, eos]]`. bos/eos markers are skipped if
@@ -238,7 +244,7 @@ class EmbeddingsProvider:
             # (part of `transformers` lib)
             truncation = self.truncate_to_model_max_length if truncation_override is None else truncation_override
             token_ids_list = self.tokenizer(
-                texts,
+                non_cached_texts,
                 truncation=truncation,
                 padding=padding,
                 return_tensors=None,  # just give me lists of ints
@@ -250,8 +256,7 @@ class EmbeddingsProvider:
                 token_ids = token_ids[1:-1]
                 # Pad for textual inversions with vector length >1
                 if self.textual_inversion_manager is not None:
-                    token_ids = self.textual_inversion_manager.expand_textual_inversion_token_ids_if_necessary(
-                        token_ids)
+                    token_ids = self.textual_inversion_manager.expand_textual_inversion_token_ids_if_necessary(token_ids)
 
                 # Add back eos/bos if requested
                 if include_start_and_end_markers:
@@ -358,12 +363,14 @@ class EmbeddingsProvider:
         # Use a combination of tensor properties to generate a hash
         return hash((tensor.shape, tensor.dtype, torch.sum(tensor).item()))
 
-    def build_weighted_embedding_tensor(self,
-                                        token_ids: torch.Tensor,
-                                        per_token_weights: torch.Tensor,
-                                        attention_mask: Optional[torch.Tensor] = None,
-                                        cache_key = None
-                                        ) -> torch.Tensor:
+    def build_weighted_embedding_tensor(
+            self,
+            token_ids: torch.Tensor,
+            per_token_weights: torch.Tensor,
+            attention_mask: Optional[torch.Tensor] = None,
+            cache_key = None
+    ) -> torch.Tensor:
+
         if token_ids.shape[0] % self.max_token_count != 0:
             raise ValueError(f"token_ids has shape {token_ids.shape} - expected a multiple of {self.max_token_count}")
 
