@@ -7,7 +7,7 @@ from src.compel.compel import Compel
 from diffusers import StableDiffusionPipeline
 
 
-def get_device(cls):
+def get_device():
     if torch.cuda.is_available():
         return 'cuda'
     elif torch.backends.mps.is_available():
