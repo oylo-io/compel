@@ -1,8 +1,9 @@
 [project]
 name = "compel"
-version = "2.0.3"
+version = "2.0.4"
 authors = [
-  { name="Damian Stewart", email="null@damianstewart.com" },
+    { name="Damian Stewart", email="null@damianstewart.com" },
+    { name="Roman Himmelreich", email="roman@oylo.io" }
 ]
 description = "A prompting enhancement library for transformers-type text embedding systems."
 readme = "README.md"
@@ -20,8 +21,8 @@ dependencies = [
 ]
 
 [project.urls]
-"Homepage" = "https://github.com/damian0815/compel"
-"Bug Tracker" = "https://github.com/damian0815/compel/issues"
+"Homepage" = "https://github.com/oylo-io/compel"
+"Bug Tracker" = "https://github.com/oylo-io/compel/issues"
 
 [build-system]
 requires = ["setuptools>=61.0"]
