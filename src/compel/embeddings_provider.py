@@ -232,7 +232,7 @@ class EmbeddingsProvider:
         # Identify non-cached texts
         for i, text in enumerate(texts):
             if text in self.tokenizer_cache:
-                print('Tokenizer Cache hit!')
+                # print('Tokenizer Cache hit!')
                 result.append(self.tokenizer_cache[text])
             else:
                 non_cached_texts.append(text)
@@ -380,7 +380,7 @@ class EmbeddingsProvider:
 
         # Check if the result is already cached
         if cache_key in self.embedding_cache:
-            print('Embedding Cache hit!')
+            # print('Embedding Cache hit!')
             return self.embedding_cache[cache_key]
 
         weighted_z = []

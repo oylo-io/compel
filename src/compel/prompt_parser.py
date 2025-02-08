@@ -71,7 +71,6 @@ class FlattenedPrompt():
         return (type(other) is FlattenedPrompt
                and other.children == self.children)
 
-
 class Prompt():
     """
     Intermediate structure for storing the tree-like result of parsing a prompt. A Prompt may not represent the whole of
@@ -150,7 +149,6 @@ class Blend():
     def __eq__(self, other):
         return other.__repr__() == self.__repr__()
 
-
 class Conjunction():
     """
     Storage for one or more Prompts, Blends, or FlattenedPrompts, requested using eg `("prompt 1", "prompt 2").and()`.
@@ -181,8 +179,6 @@ class Conjunction():
                and other.prompts == self.prompts \
                and other.weights == self.weights \
                and other.lora_weights == self.lora_weights
-
-
 
 class Fragment(BaseFragment):
     """
@@ -287,8 +283,6 @@ class CrossAttentionControlSubstitute(CrossAttentionControlledFragment):
                and other.edited == self.edited \
                and other.options == self.options
 
-
-
 class CrossAttentionControlAppend(CrossAttentionControlledFragment):
     def __init__(self, fragment: Fragment):
         self.fragment = fragment
@@ -297,8 +291,6 @@ class CrossAttentionControlAppend(CrossAttentionControlledFragment):
     def __eq__(self, other):
         return type(other) is CrossAttentionControlAppend \
                and other.fragment == self.fragment
-
-
 
 class PromptParser():
 
@@ -434,9 +426,6 @@ class PromptParser():
         verbose and print("flattened to", flattened_parts)
 
         return Conjunction(flattened_parts, weights, lora_weights=loras)
-
-
-
 
 def build_parser_syntax(attention_plus_base: float, attention_minus_base: float):
     """
@@ -697,3 +686,37 @@ def build_parser_syntax(attention_plus_base: float, attention_minus_base: float)
 
     return conjunction, prompt
 
+def match_weighted_subprompts(prompt: str):
+    """
+    Parses a prompt to extract subprompts and their weights.
+
+    Example:
+        Input: "sunset on (snowy)1.5 mountain"
+        Output: [("sunset on", 1.0), ("snowy", 1.5), ("mountain", 1.0)]
+    """
+    pattern = r"\(([^)]+)\)([\d.]+)"
+    last_end = 0
+    subprompts = []
+    weights = []
+
+    # iterate mateches
+    for match in re.finditer(pattern, prompt):
+        text_before = prompt[last_end:match.start()].strip()  # Strip spaces
+        if text_before:  # Avoid adding empty or whitespace-only segments
+            subprompts.append(text_before)
+            weights.append(1.0)
+
+        bracketed_text = match.group(1).strip()  # Strip spaces from inside the parentheses
+        weight = float(match.group(2))
+        if bracketed_text:  # Ensure there's actual text
+            subprompts.append(bracketed_text)
+            weights.append(weight)
+
+        last_end = match.end()
+
+    text_after = prompt[last_end:].strip()  # Strip spaces at the end
+    if text_after:
+        subprompts.append(text_after)
+        weights.append(1.0)
+
+    return subprompts, weights

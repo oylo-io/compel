@@ -8,7 +8,8 @@ from transformers import CLIPTokenizer, CLIPTextModel
 from . import cross_attention_control
 from .conditioning_scheduler import ConditioningScheduler, StaticConditioningScheduler
 from .embeddings_provider import EmbeddingsProvider, BaseTextualInversionManager, DownweightMode, ReturnedEmbeddingsType, EmbeddingsProviderMulti
-from .prompt_parser import Blend, FlattenedPrompt, PromptParser, CrossAttentionControlSubstitute, Conjunction
+from .prompt_parser import Blend, FlattenedPrompt, PromptParser, CrossAttentionControlSubstitute, Conjunction, \
+    match_weighted_subprompts
 
 __all__ = ["Compel", "DownweightMode"]
 
@@ -103,6 +104,19 @@ class Compel:
         return StaticConditioningScheduler(positive_conditioning=positive_conditioning,
                                            negative_conditioning=negative_conditioning)
 
+    def build_weighted_embedding(self, prompt: str) -> torch.Tensor:
+
+        # parse prompt to subprompt segments
+        subprompts, weights = match_weighted_subprompts(prompt)
+
+        # build embedding
+        weighted_embedding = self.conditioning_provider.get_embeddings_for_weighted_prompt_fragments(
+            text_batch=[subprompts],
+            fragment_weights_batch=[weights],
+            device=self.device
+        )
+        return weighted_embedding
+
     def build_conditioning_tensor(self, text: str) -> torch.Tensor:
         """
         Build a conditioning tensor by parsing the text for Compel syntax, constructing a Conjunction, and then
@@ -169,7 +183,6 @@ class Compel:
         """
         return self.conditioning_provider.tokenizer.tokenize(text)
 
-
     def build_conditioning_tensor_for_conjunction(self, conjunction: Conjunction) -> Tuple[torch.Tensor, dict]:
         """
         Build a conditioning tensor for the given Conjunction object.
@@ -201,7 +214,6 @@ class Compel:
         else:
             assert False, f"unhandled conditioning shape length: {to_concat[0].shape}"
         return torch.concat(to_concat, dim=token_dim), options
-
 
     def build_conditioning_tensor_for_prompt_object(self, prompt: Union[Blend, FlattenedPrompt],
                                                     ) -> Tuple[torch.Tensor, dict]:
@@ -243,7 +255,6 @@ class Compel:
                 conditionings[i] = c
         return conditionings
 
-
     def pad_conditioning_tensors_to_same_length(self, conditionings: List[torch.Tensor],
                                                 ) -> List[torch.Tensor]:
         """
@@ -264,8 +275,6 @@ class Compel:
             # discard pooled
             emptystring_conditioning = emptystring_conditioning[0]
         return type(self)._pad_conditioning_tensors_to_same_length(conditionings, emptystring_conditioning=emptystring_conditioning)
-
-
 
     def _get_conditioning_for_flattened_prompt(self,
                                                prompt: FlattenedPrompt,
@@ -291,8 +300,6 @@ class Compel:
                                                                   blend.weights,
                                                                   normalize=blend.normalize_weights)
         return conditioning
-
-
 
     def _get_conditioning_for_cross_attention_control(self, prompt: FlattenedPrompt) -> cross_attention_control.Arguments:
         original_prompt = FlattenedPrompt()
@@ -367,4 +374,3 @@ class Compel:
 
     def get_tokens(self, text: str) -> List[int]:
         return self.conditioning_provider.get_token_ids([text], include_start_and_end_markers=False)[0]
-
