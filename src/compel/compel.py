@@ -106,6 +106,16 @@ class Compel:
 
     def build_weighted_embedding(self, prompt: str) -> torch.Tensor:
 
+        # check if the prompt is empty
+        if not prompt.strip():
+
+            # return an embedding for an empty string
+            return self.conditioning_provider.get_embeddings_for_weighted_prompt_fragments(
+                text_batch=[[""]],
+                fragment_weights_batch=[[1.0]],
+                device=self.device
+            )
+
         # parse prompt to subprompt segments
         subprompts, weights = match_weighted_subprompts(prompt)
 
