@@ -104,13 +104,16 @@ class Compel:
         return StaticConditioningScheduler(positive_conditioning=positive_conditioning,
                                            negative_conditioning=negative_conditioning)
 
-    def build_weighted_embedding(self, prompt: str) -> torch.Tensor:
+    def build_weighted_embedding(self, prompt: str, requires_pooled: bool) -> torch.Tensor:
+
+        # resulting
+        weighted_embeddings = None
 
         # check if the prompt is empty
         if not prompt.strip():
 
             # return an embedding for an empty string
-            return self.conditioning_provider.get_embeddings_for_weighted_prompt_fragments(
+            weighted_embeddings = self.conditioning_provider.get_embeddings_for_weighted_prompt_fragments(
                 text_batch=[[""]],
                 fragment_weights_batch=[[1.0]],
                 device=self.device
@@ -120,12 +123,18 @@ class Compel:
         subprompts, weights = match_weighted_subprompts(prompt)
 
         # build embedding
-        weighted_embedding = self.conditioning_provider.get_embeddings_for_weighted_prompt_fragments(
+        weighted_embeddings = self.conditioning_provider.get_embeddings_for_weighted_prompt_fragments(
             text_batch=[subprompts],
             fragment_weights_batch=[weights],
             device=self.device
         )
-        return weighted_embedding
+
+        # check if pooled embeddings requested
+        if requires_pooled:
+            pooled_embeddings = self.conditioning_provider.get_pooled_embeddings([prompt], device=self.device)
+            return weighted_embeddings, pooled_embeddings
+
+        return weighted_embeddings
 
     def build_conditioning_tensor(self, text: str) -> torch.Tensor:
         """
