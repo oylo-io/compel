@@ -268,11 +268,18 @@ class EmbeddingsProvider:
 
         return result
 
-    def get_pooled_embeddings(self, texts: List[str], attention_mask: Optional[torch.Tensor]=None, device: Optional[str]=None) -> Optional[torch.Tensor]:
-        
+    def get_pooled_embeddings(self, texts: List[str], attention_mask: Optional[torch.Tensor] = None,
+                              device: Optional[str] = None) -> Optional[torch.Tensor]:
+
         device = device or self.device
 
-        token_ids = self.get_token_ids(texts, padding="max_length", truncation_override=True)
+        # Handle empty text case by using a single space instead of empty string
+        # This allows the model to process it normally but with minimal semantic meaning
+        processed_texts = []
+        for text in texts:
+            processed_texts.append(" " if not text else text)
+
+        token_ids = self.get_token_ids(processed_texts, padding="max_length", truncation_override=True)
         token_ids = torch.tensor(token_ids, dtype=torch.long).to(device)
 
         text_encoder_output = self.text_encoder(token_ids, attention_mask, return_dict=True)
