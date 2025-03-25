@@ -190,14 +190,9 @@ class EmbeddingsProvider:
 
             lerped_embeddings = self.apply_embedding_weights(embeddings, per_embedding_weights, normalize=True).squeeze(0)
 
-            #print(f"assembled tokens for '{fragments}' into tensor of shape {lerped_embeddings.shape}")
-
             # append to batch
             batch_z = lerped_embeddings.unsqueeze(0) if batch_z is None else torch.cat([batch_z, lerped_embeddings.unsqueeze(0)], dim=1)
             batch_tokens = tokens.unsqueeze(0) if batch_tokens is None else torch.cat([batch_tokens, tokens.unsqueeze(0)], dim=1)
-
-        # should have shape (B, 77, 768)
-        #print(f"assembled all tokens into tensor of shape {batch_z.shape}")
 
         if should_return_tokens:
             return batch_z, batch_tokens
@@ -387,7 +382,6 @@ class EmbeddingsProvider:
 
         # Check if the result is already cached
         if cache_key in self.embedding_cache:
-            # print('Embedding Cache hit!')
             return self.embedding_cache[cache_key]
 
         weighted_z = []

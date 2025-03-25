@@ -104,16 +104,13 @@ class Compel:
         return StaticConditioningScheduler(positive_conditioning=positive_conditioning,
                                            negative_conditioning=negative_conditioning)
 
-    def build_weighted_embedding(self, prompt: str, requires_pooled: bool) -> torch.Tensor:
-
-        # resulting
-        weighted_embeddings = None
+    def build_weighted_embedding(self, prompt: str, requires_pooled: bool) -> Tensor | tuple[Tensor, Tensor]:
 
         # check if the prompt is empty
         if not prompt.strip():
 
             # return an embedding for an empty string
-            weighted_embeddings = self.conditioning_provider.get_embeddings_for_weighted_prompt_fragments(
+            return self.conditioning_provider.get_embeddings_for_weighted_prompt_fragments(
                 text_batch=[[""]],
                 fragment_weights_batch=[[1.0]],
                 device=self.device
