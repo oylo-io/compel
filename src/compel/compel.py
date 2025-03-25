@@ -106,32 +106,34 @@ class Compel:
 
     def build_weighted_embedding(self, prompt: str, requires_pooled: bool) -> Tensor | tuple[Tensor, Tensor]:
 
-        # check if the prompt is empty
+        # empty prompt
         if not prompt.strip():
 
-            # return an embedding for an empty string
-            return self.conditioning_provider.get_embeddings_for_weighted_prompt_fragments(
+            # embedding for empty string
+            weighted_embeddings = self.conditioning_provider.get_embeddings_for_weighted_prompt_fragments(
                 text_batch=[[""]],
                 fragment_weights_batch=[[1.0]],
                 device=self.device
             )
 
-        # parse prompt to subprompt segments
-        subprompts, weights = match_weighted_subprompts(prompt)
+        else:
 
-        # build embedding
-        weighted_embeddings = self.conditioning_provider.get_embeddings_for_weighted_prompt_fragments(
-            text_batch=[subprompts],
-            fragment_weights_batch=[weights],
-            device=self.device
-        )
+            # parse prompt to subprompt segments
+            subprompts, weights = match_weighted_subprompts(prompt)
+
+            # build embedding
+            weighted_embeddings = self.conditioning_provider.get_embeddings_for_weighted_prompt_fragments(
+                text_batch=[subprompts],
+                fragment_weights_batch=[weights],
+                device=self.device
+            )
 
         # check if pooled embeddings requested
         if requires_pooled:
             pooled_embeddings = self.conditioning_provider.get_pooled_embeddings([prompt], device=self.device)
             return weighted_embeddings, pooled_embeddings
-
-        return weighted_embeddings
+        else:
+            return weighted_embeddings
 
     def build_conditioning_tensor(self, text: str) -> torch.Tensor:
         """
